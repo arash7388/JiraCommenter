@@ -54,6 +54,7 @@ namespace JiraCommenter
         public bool GenerateChangeLog { get; set; } = true;
         public List<string> EpicKeysToDocument { get; set; } = new(); // Filter specific epics
         public string DocumentationPromptTemplate { get; set; }
+        public List<string> RepoSlugs { get; set; } = new();
     }
 
 }
