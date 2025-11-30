@@ -4,10 +4,11 @@ using System.Text;
 
 namespace JiraCommenter.Documentation
 {
-    public class JiraClient
+    public class JiraClient : IDisposable
     {
         private readonly HttpClient _httpClient;
         private readonly JiraSettings _settings;
+        private bool _disposed;
 
         public JiraClient(JiraSettings settings)
         {
@@ -64,6 +65,24 @@ namespace JiraCommenter.Documentation
                 Status = apiIssue.Fields?.Status?.Name ?? "",
                 IssueType = apiIssue.Fields?.IssueType?.Name ?? ""
             };
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    _httpClient?.Dispose();
+                }
+                _disposed = true;
+            }
         }
     }
 

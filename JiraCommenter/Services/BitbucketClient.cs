@@ -3,10 +3,11 @@ using System.Net.Http.Json;
 
 namespace JiraCommenter.Documentation
 {
-    public class BitbucketClient
+    public class BitbucketClient : IDisposable
     {
         private readonly HttpClient _httpClient;
         private readonly BitbucketSettings _settings;
+        private bool _disposed;
 
         public BitbucketClient(BitbucketSettings settings)
         {
@@ -49,10 +50,28 @@ namespace JiraCommenter.Documentation
 
             if (response?.Values != null)
             {
-                files.AddRange(response.Values.Select(c => c.Path?.ToString() ?? ""));
+                files.AddRange(response.Values.Select(c => c.Path?.Name ?? ""));
             }
 
             return files.Where(f => !string.IsNullOrEmpty(f)).ToList();
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    _httpClient?.Dispose();
+                }
+                _disposed = true;
+            }
         }
     }
 
@@ -102,6 +121,6 @@ namespace JiraCommenter.Documentation
 
     internal class BitbucketPath
     {
-        public string? ToString { get; set; }
+        public string? Name { get; set; }
     }
 }
