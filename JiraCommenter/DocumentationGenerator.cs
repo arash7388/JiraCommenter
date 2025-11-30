@@ -147,5 +147,54 @@ Tasks: {JsonSerializer.Serialize(feature.TaskHistory.Select(t => new { t.Title, 
 
             return await _aiClient.GenerateAsync(prompt);
         }
+
+        private TaskHistory MapToTaskHistory(JiraIssue issue)
+        {
+            return new TaskHistory
+            {
+                JiraKey = issue.Key,
+                Title = issue.Summary,
+                Description = issue.Description,
+                Type = issue.IssueType,
+                Status = issue.Status
+            };
+        }
+
+        private async Task GenerateOutputFilesAsync(List<FeatureDocumentation> features)
+        {
+            switch (_settings.OutputFormat.ToLowerInvariant())
+            {
+                case "markdown":
+                default:
+                    var markdownWriter = new MarkdownDocumentWriter(_settings.OutputPath);
+                    await markdownWriter.WriteFeatureDocumentationAsync(features);
+                    break;
+                case "html":
+                    // Generate HTML output
+                    await GenerateHtmlOutputAsync(features);
+                    break;
+            }
+        }
+
+        private async Task GenerateHtmlOutputAsync(List<FeatureDocumentation> features)
+        {
+            Directory.CreateDirectory(_settings.OutputPath);
+            
+            foreach (var feature in features)
+            {
+                var html = new StringBuilder();
+                html.AppendLine("<!DOCTYPE html>");
+                html.AppendLine("<html><head><title>" + feature.FeatureName + "</title></head>");
+                html.AppendLine("<body>");
+                html.AppendLine($"<h1>{feature.FeatureName}</h1>");
+                html.AppendLine($"<p><strong>Epic:</strong> {feature.EpicKey}</p>");
+                html.AppendLine($"<h2>Overview</h2><p>{feature.AIGeneratedSummary}</p>");
+                html.AppendLine($"<h2>Business Context</h2><p>{feature.BusinessContext}</p>");
+                html.AppendLine("</body></html>");
+
+                var fileName = feature.FeatureName.Replace(" ", "-").ToLowerInvariant() + ".html";
+                await File.WriteAllTextAsync(Path.Combine(_settings.OutputPath, fileName), html.ToString());
+            }
+        }
     }
 }

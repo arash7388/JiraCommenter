@@ -17,7 +17,7 @@ namespace JiraCommenter.Documentation
             };
         }
 
-        public async Task<string> GenerateAsync(string prompt)
+        public override async Task<string> GenerateAsync(string prompt)
         {
             var request = new
             {
