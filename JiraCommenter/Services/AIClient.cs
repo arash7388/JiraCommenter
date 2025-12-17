@@ -1,4 +1,4 @@
-namespace JiraCommenter.Documentation
+namespace JiraCommenter.Services
 {
     public abstract class AIClient
     {

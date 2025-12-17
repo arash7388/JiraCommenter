@@ -1,5 +1,6 @@
-﻿using JiraCommenter;
-using JiraCommenter.Documentation;
+﻿using JiraCommenter.Documentation;
+using JiraCommenter.Models;
+using JiraCommenter.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Memory;
 using System;
@@ -17,11 +18,20 @@ class Program
 {
     static AppSettings _config;
 
-    static async Task Main()
+    static async Task Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
         Console.InputEncoding = Encoding.UTF8;
         LoadConfig();
+
+        //if (args.Contains("--generate-docs"))
+        //{
+        //    Console.WriteLine("Starting documentation generation...");
+        //    var documentationGenerator = new DocumentationGenerator(_config);
+        //    await documentationGenerator.GenerateDocumentationAsync();
+        //    Console.WriteLine("Documentation generation complete.");
+        //    return;
+        //}
 
         Console.WriteLine("Bitbucket AI Commenter started...");
         Console.WriteLine($"Monitoring {_config.Bitbucket.RepoSlugs.Count} repositories");
@@ -635,24 +645,121 @@ class Program
             model = _config.AI.Model, // gpt-4o-mini
             messages = new[]
             {
-                new
-                {
-                    role = "system",
-                    content = _config.AI.SystemPrompt
-                },
-                new
-                {
-                    role = "user",
-                    content = string.Format(_config.AI.UserPromptTemplate, title, description, diff)
-                }
+                new { role = "system", content = _config.AI.SystemPrompt },
+                new { role = "user", content = string.Format(_config.AI.UserPromptTemplate, title, description, diff) }
             }
         };
 
         var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         var res = await http.PostAsync(_config.AI.Endpoint, content);
 
-        var json = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        string text = json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+        var raw = await res.Content.ReadAsStringAsync();
+
+        // Validate HTTP status
+        if (!res.IsSuccessStatusCode)
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine($"❌ AI API error: {(int)res.StatusCode} {res.ReasonPhrase}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return $"AI request failed with status {(int)res.StatusCode} {res.ReasonPhrase}.";
+        }
+
+        // Validate content type
+        var contentType = res.Content.Headers.ContentType?.MediaType ?? "";
+        if (!contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine("❌ AI API returned non-JSON content.");
+            Console.WriteLine($"   Content-Type: {contentType}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return "AI response was not JSON; unable to parse.";
+        }
+
+        JsonDocument json;
+        try
+        {
+            json = JsonDocument.Parse(raw);
+        }
+        catch (JsonException ex)
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine($"❌ Failed to parse AI JSON: {ex.Message}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return "Failed to parse AI response JSON.";
+        }
+
+        // Extract text for OpenAI and Azure OpenAI variants
+        string text = null;
+
+        // OpenAI-style: choices[0].message.content
+        if (json.RootElement.TryGetProperty("choices", out var choices) &&
+            choices.ValueKind == JsonValueKind.Array &&
+            choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var message) &&
+                message.TryGetProperty("content", out var contentProp) &&
+                contentProp.ValueKind == JsonValueKind.String)
+            {
+                text = contentProp.GetString();
+            }
+            // Some responses may use 'text' instead of 'content'
+            else if (first.TryGetProperty("text", out var textProp) &&
+                     textProp.ValueKind == JsonValueKind.String)
+            {
+                text = textProp.GetString();
+            }
+        }
+
+        // Azure OpenAI chat completions sometimes use 'choices[0].messages' or different shapes; if needed, add more guards here.
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Console.WriteLine("⚠️ AI response did not contain expected content.");
+            return "AI response missing 'content' in choices.";
+        }
+
+        // Parse usage and print estimated cost
+        try
+        {
+            if (json.RootElement.TryGetProperty("usage", out var usage))
+            {
+                int promptTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+                int completionTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
+                int totalTokens = usage.TryGetProperty("total_tokens", out var tt) ? tt.GetInt32() : promptTokens + completionTokens;
+
+                var pricing = new Dictionary<string, (double inputPer1M, double outputPer1M, string note)>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "gpt-5-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4o-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4o", (2.50, 5.00, "estimated") },
+                    { "gpt-4.1-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4.1", (5.00, 15.00, "estimated") }
+                };
+
+                var model = _config.AI.Model ?? "";
+                if (!pricing.TryGetValue(model, out var price))
+                {
+                    price = (0.15, 0.60, "estimated");
+                }
+
+                double inputCost = (promptTokens / 1_000_000.0) * price.inputPer1M;
+                double outputCost = (completionTokens / 1_000_000.0) * price.outputPer1M;
+                double totalCost = inputCost + outputCost;
+
+                Console.WriteLine($"💲 OpenAI usage — Model: {model}");
+                Console.WriteLine($"   Prompt tokens: {promptTokens}, Completion tokens: {completionTokens}, Total: {totalTokens}");
+                Console.WriteLine($"   Estimated cost: ${totalCost:F6} USD (input ${inputCost:F6} + output ${outputCost:F6}) [{price.note}]");
+            }
+            else
+            {
+                Console.WriteLine("ℹ️ OpenAI response did not include usage; cost cannot be estimated.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Failed to compute OpenAI cost: {ex.Message}");
+        }
 
         return text.Trim();
     }
@@ -735,13 +842,9 @@ class Program
         }
     }
 
-    static async Task GenerateDocumentation(AppSettings settings)
+    static async Task GenerateDocumentation(AppSettings settings,BitbucketClient bitbucketClient, JiraClient jiraClient, AIClient aiClient)
     {
         Console.WriteLine("🚀 Starting documentation generation...");
-
-        var bitbucketClient = new BitbucketClient(settings.Bitbucket);
-        var jiraClient = new JiraClient(settings.Jira);
-        var aiClient = new GeminiAIClient(settings.AI);
 
         var generator = new DocumentationGenerator(
             bitbucketClient,

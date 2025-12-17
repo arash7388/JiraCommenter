@@ -1,4 +1,4 @@
-﻿namespace JiraCommenter.Documentation
+﻿namespace JiraCommenter.Models
 {
     public class FeatureDocumentation
     {

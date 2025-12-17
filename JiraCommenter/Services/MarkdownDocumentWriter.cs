@@ -1,6 +1,11 @@
-﻿using System.Text;
+﻿using JiraCommenter.Models;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
-namespace JiraCommenter.Documentation
+namespace JiraCommenter.Services
 {
     public class MarkdownDocumentWriter
     {
@@ -9,7 +14,7 @@ namespace JiraCommenter.Documentation
         public MarkdownDocumentWriter(string outputPath)
         {
             _outputPath = outputPath;
-            Directory.CreateDirectory(_outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(_outputPath));
         }
 
         public async Task WriteFeatureDocumentationAsync(List<FeatureDocumentation> features)
@@ -40,7 +45,7 @@ namespace JiraCommenter.Documentation
             foreach (var feature in features.OrderBy(f => f.FeatureName))
             {
                 var fileName = SanitizeFileName(feature.FeatureName);
-                sb.AppendLine($"| [{feature.FeatureName}](. /{fileName}. md) | {feature.EpicKey} | {feature.LastUpdated:yyyy-MM-dd} | {feature.TaskHistory.Count} |");
+                sb.AppendLine($"| [{feature.FeatureName}](./{fileName}.md) | {feature.EpicKey} | {feature.LastUpdated:yyyy-MM-dd} | {feature.TaskHistory.Count} |");
             }
 
             await File.WriteAllTextAsync(Path.Combine(_outputPath, "README.md"), sb.ToString());
@@ -125,7 +130,7 @@ namespace JiraCommenter.Documentation
                 sb.AppendLine();
             }
 
-            await File.WriteAllTextAsync(Path.Combine(_outputPath, "CHANGELOG. md"), sb.ToString());
+            await File.WriteAllTextAsync(Path.Combine(_outputPath, "CHANGELOG.md"), sb.ToString());
         }
 
         private string SanitizeFileName(string name)

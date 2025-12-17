@@ -1,4 +1,6 @@
-﻿using System.Linq;
+﻿using JiraCommenter.Models;
+using JiraCommenter.Services;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 
