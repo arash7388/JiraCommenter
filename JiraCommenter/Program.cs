@@ -36,9 +36,17 @@ class Program
         Console.WriteLine("Bitbucket AI Commenter started...");
         Console.WriteLine($"Monitoring {_config.Bitbucket.RepoSlugs.Count} repositories");
 
+        // Get mode selection
+        Console.WriteLine("\nSelect mode:");
+        Console.WriteLine("1. Full PR Analysis (default)");
+        Console.WriteLine("2. Deployment Tips Only");
+        Console.Write("Enter mode (1 or 2): ");
+        string modeInput = Console.ReadLine()?.Trim();
+        bool deploymentTipsOnly = modeInput == "2";
+
         // Get specific Jira task number from user
         Console.Write("Enter task number (e.g., 28667 for WEPOD-28667) or press Enter to process all: ");
-        
+
         string input = Console.ReadLine()?.Trim();
 
         string specificJiraKey = null;
@@ -58,7 +66,7 @@ class Program
         if (!string.IsNullOrEmpty(specificJiraKey))
         {
             Console.WriteLine($"Processing only PRs related to: {specificJiraKey}");
-            await ProcessSpecificTask(specificJiraKey);
+            await ProcessSpecificTask(specificJiraKey, deploymentTipsOnly);
         }
         else
         {
@@ -68,7 +76,7 @@ class Program
             {
                 try
                 {
-                    await CheckMergedPRsAcrossRepos(lastCheck);
+                    await CheckMergedPRsAcrossRepos(lastCheck, deploymentTipsOnly);
                     lastCheck = DateTime.UtcNow;
                 }
                 catch (Exception ex)
@@ -91,7 +99,7 @@ class Program
         _config = configuration.Get<AppSettings>();
     }
 
-    static async Task ProcessSpecificTask(string jiraKey)
+    static async Task ProcessSpecificTask(string jiraKey, bool deploymentTipsOnly = false)
     {
         try
         {
@@ -107,7 +115,7 @@ class Program
                 Console.WriteLine($"📦 Found {prsForTask.Count} PR(s) for {jiraKey} across all repositories");
 
                 // Process all PRs together
-                await ProcessJiraTask(jiraKey, prsForTask);
+                await ProcessJiraTask(jiraKey, prsForTask, deploymentTipsOnly);
             }
 
             Console.WriteLine($"\n✅ Processing complete for {jiraKey}");
@@ -122,7 +130,7 @@ class Program
     }
 
     // 🔄 بررسی PRهای merge شده در تمام ریپوزیتوری‌ها
-    static async Task CheckMergedPRsAcrossRepos(DateTime lastCheck)
+    static async Task CheckMergedPRsAcrossRepos(DateTime lastCheck, bool deploymentTipsOnly = false)
     {
         // Group PRs by Jira task across all repositories
         var prsByJiraKey = new Dictionary<string, List<PRInfo>>();
@@ -159,7 +167,7 @@ class Program
             var prs = kvp.Value;
 
             Console.WriteLine($"\n🎯 Processing Jira task: {jiraKey} with {prs.Count} PR(s)");
-            await ProcessJiraTask(jiraKey, prs);
+            await ProcessJiraTask(jiraKey, prs, deploymentTipsOnly);
         }
     }
 
@@ -239,7 +247,7 @@ class Program
     }
 
     // 🔄 پردازش یک تسک جیرا با تمام PRهای آن
-    static async Task ProcessJiraTask(string jiraKey, List<PRInfo> prs)
+    static async Task ProcessJiraTask(string jiraKey, List<PRInfo> prs, bool deploymentTipsOnly = false)
     {
         var allCommits = new List<CommitInfo>();
         var allDiffs = new StringBuilder();
@@ -302,27 +310,35 @@ class Program
         string consolidatedDescription = MergeAllPRInformation(prSummaries.ToString(), allCommits, allClaims);
         string consolidatedDiff = allDiffs.ToString();
 
-        // Generate single AI comment for all PRs
-        Console.WriteLine("\n🤖 Generating AI summary for all PRs...");
-        string aiComment = await GenerateAIComment(
-            $"{jiraKey} - {prs.Count} PR(s) across {prsByRepo.Count} repo(s)",
-            consolidatedDescription,
-            consolidatedDiff
-        );
+        // Generate AI comment
+        string aiComment;
+        if (deploymentTipsOnly)
+        {
+            Console.WriteLine("\n🚀 Generating deployment tips only...");
+            aiComment = await GenerateDeploymentTips(
+                $"{jiraKey} - {prs.Count} PR(s) across {prsByRepo.Count} repo(s)",
+                consolidatedDescription,
+                consolidatedDiff
+            );
+        }
+        else
+        {
+            Console.WriteLine("\n🤖 Generating AI summary for all PRs...");
+            aiComment = await GenerateAIComment(
+                $"{jiraKey} - {prs.Count} PR(s) across {prsByRepo.Count} repo(s)",
+                consolidatedDescription,
+                consolidatedDiff
+            );
+        }
 
         // Save and post
-        await File.WriteAllTextAsync($"output_{jiraKey}.txt", aiComment, Encoding.UTF8);
-        Console.WriteLine($"💾 Output saved to: output_{jiraKey}.txt\n");
+        string outputFileName = deploymentTipsOnly ? $"deployment_{jiraKey}.txt" : $"output_{jiraKey}.txt";
+        await File.WriteAllTextAsync(outputFileName, aiComment, Encoding.UTF8);
+        Console.WriteLine($"💾 Output saved to: {outputFileName}\n");
 
-        // Check if we should post to Jira
-        Console.Write("Post this comment to Jira? (y/n): ");
-        var response = Console.ReadLine()?.Trim().ToLower();
-        if (response == "y" || response == "yes")
-        {
-            // Use PR IDs instead of titles for the header
-            string prIds = string.Join(", ", prs.Select(p => $"#{p.Id}"));
-            await PostToJira(jiraKey, aiComment, prIds);
-        }
+        // Automatically post to Jira (no confirmation needed)
+        string prIds = string.Join(", ", prs.Select(p => $"#{p.Id}"));
+        await PostToJira(jiraKey, aiComment, prIds);
     }
 
     // 🔐 استخراج Claim Requirements از diff
@@ -642,7 +658,7 @@ class Program
 
         var body = new
         {
-            model = _config.AI.Model, // gpt-4o-mini
+            model = _config.AI.Model, // gpt-5-mini
             messages = new[]
             {
                 new { role = "system", content = _config.AI.SystemPrompt },
@@ -764,6 +780,151 @@ class Program
         return text.Trim();
     }
 
+    // 🚀 تولید تیپس مربوط به استقرار فقط
+    static async Task<string> GenerateDeploymentTips(string title, string description, string diff)
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _config.AI.Token);
+
+        // Deployment-focused system prompt
+        string deploymentSystemPrompt = @"You are a deployment specialist. Analyze the code changes and provide ONLY deployment-related tips in Persian. Focus on:
+
+1. **تنظیمات (Configuration)**: Any appsettings.json or configuration file changes
+2. **دسترسی‌ها (Authorization)**: New claims, policies, or authentication requirements
+3. **متغیرهای محیطی (Environment Variables)**: Required environment variables
+4. **نوع احراز هویت (Authentication Type)**: Find [Authorize(AuthenticationSchemes = ***)] and mention the service schema (Thing, XBank, Signature, Wepod)
+
+Format the output as:
+**🚀 ملاحظات استقرار**
+
+List each deployment consideration as a bullet point with clear, actionable information.
+
+IMPORTANT ABOUT CLAIMS: 
+- Carefully check the 'Authorization Claims' section in the input
+- If it says 'NO new authorization claims detected', DO NOT mention any claims
+- ONLY mention claims if specific claim names are listed
+- Format: 'دسترسی‌های جدید مورد نیاز: claim1, claim2'
+
+If NO deployment-related changes are found, simply respond with:
+'**🚀 ملاحظات استقرار**
+- تغییرات این PR نیازی به اقدام خاصی در زمان استقرار ندارد.'";
+
+        var body = new
+        {
+            model = _config.AI.Model,
+            messages = new[]
+            {
+                new { role = "system", content = deploymentSystemPrompt },
+                new { role = "user", content = $"Task: {title}\n\nPR Information:\n{description}\n\nCode Diffs:\n{diff}" }
+            }
+        };
+
+        var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        var res = await http.PostAsync(_config.AI.Endpoint, content);
+
+        var raw = await res.Content.ReadAsStringAsync();
+
+        // Validate HTTP status
+        if (!res.IsSuccessStatusCode)
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine($"❌ AI API error: {(int)res.StatusCode} {res.ReasonPhrase}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return $"AI request failed with status {(int)res.StatusCode} {res.ReasonPhrase}.";
+        }
+
+        // Validate content type
+        var contentType = res.Content.Headers.ContentType?.MediaType ?? "";
+        if (!contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine("❌ AI API returned non-JSON content.");
+            Console.WriteLine($"   Content-Type: {contentType}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return "AI response was not JSON; unable to parse.";
+        }
+
+        JsonDocument json;
+        try
+        {
+            json = JsonDocument.Parse(raw);
+        }
+        catch (JsonException ex)
+        {
+            var snippet = raw.Length > 300 ? raw.Substring(0, 300) + "..." : raw;
+            Console.WriteLine($"❌ Failed to parse AI JSON: {ex.Message}");
+            Console.WriteLine($"   Response snippet: {snippet}");
+            return "Failed to parse AI response JSON.";
+        }
+
+        // Extract text
+        string text = null;
+
+        if (json.RootElement.TryGetProperty("choices", out var choices) &&
+            choices.ValueKind == JsonValueKind.Array &&
+            choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var message) &&
+                message.TryGetProperty("content", out var contentProp) &&
+                contentProp.ValueKind == JsonValueKind.String)
+            {
+                text = contentProp.GetString();
+            }
+            else if (first.TryGetProperty("text", out var textProp) &&
+                     textProp.ValueKind == JsonValueKind.String)
+            {
+                text = textProp.GetString();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Console.WriteLine("⚠️ AI response did not contain expected content.");
+            return "AI response missing 'content' in choices.";
+        }
+
+        // Parse usage and print cost
+        try
+        {
+            if (json.RootElement.TryGetProperty("usage", out var usage))
+            {
+                int promptTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+                int completionTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
+                int totalTokens = usage.TryGetProperty("total_tokens", out var tt) ? tt.GetInt32() : promptTokens + completionTokens;
+
+                var pricing = new Dictionary<string, (double inputPer1M, double outputPer1M, string note)>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "gpt-5-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4o-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4o", (2.50, 5.00, "estimated") },
+                    { "gpt-4.1-mini", (0.15, 0.60, "estimated") },
+                    { "gpt-4.1", (5.00, 15.00, "estimated") }
+                };
+
+                var model = _config.AI.Model ?? "";
+                if (!pricing.TryGetValue(model, out var price))
+                {
+                    price = (0.15, 0.60, "estimated");
+                }
+
+                double inputCost = (promptTokens / 1_000_000.0) * price.inputPer1M;
+                double outputCost = (completionTokens / 1_000_000.0) * price.outputPer1M;
+                double totalCost = inputCost + outputCost;
+
+                Console.WriteLine($"💲 OpenAI usage — Model: {model}");
+                Console.WriteLine($"   Prompt tokens: {promptTokens}, Completion tokens: {completionTokens}, Total: {totalTokens}");
+                Console.WriteLine($"   Estimated cost: ${totalCost:F6} USD (input ${inputCost:F6} + output ${outputCost:F6}) [{price.note}]");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Failed to compute OpenAI cost: {ex.Message}");
+        }
+
+        return text.Trim();
+    }
+
     static string ExtractJiraKey(string title, string description)
     {
         var text = (title + " " + description).ToUpperInvariant();
@@ -791,7 +952,7 @@ class Program
                 string body = comment.GetProperty("body").GetString() ?? "";
 
                 // Check if comment is from AI bot
-                if (body.Contains("🤖 *AI Product Summary:*"))
+                if (body.Contains("🤖 *AI Product Summary:*") || body.Contains("🚀 *Deployment Tips:*"))
                 {
                     // Check if it contains any of the PR IDs
                     var ids = prIds.Split(", ");
@@ -826,8 +987,12 @@ class Program
         var auth = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{_config.Jira.User}:{_config.Jira.Password}"));
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", auth);
 
-        // Include PR IDs in the comment header instead of titles
-        var payload = new { body = $"🤖 *AI Product Summary:*\n*PRs:* {prIds}\n\n{comment}" };
+        // Determine comment header based on content type
+        string header = comment.Contains("🚀 ملاحظات استقرار")
+            ? $"🚀 *Deployment Tips:*\n*PRs:* {prIds}\n\n"
+            : $"🤖 *AI Product Summary:*\n*PRs:* {prIds}\n\n";
+
+        var payload = new { body = header + comment };
         var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         var url = $"{_config.Jira.BaseUrl}/rest/api/2/issue/{issueKey}/comment";
@@ -842,7 +1007,7 @@ class Program
         }
     }
 
-    static async Task GenerateDocumentation(AppSettings settings,BitbucketClient bitbucketClient, JiraClient jiraClient, AIClient aiClient)
+    static async Task GenerateDocumentation(AppSettings settings, BitbucketClient bitbucketClient, JiraClient jiraClient, AIClient aiClient)
     {
         Console.WriteLine("🚀 Starting documentation generation...");
 
